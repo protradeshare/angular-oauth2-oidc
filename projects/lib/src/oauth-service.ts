@@ -678,6 +678,30 @@ export class OAuthService extends AuthConfig implements OnDestroy {
       headers
     ).then(() => this.loadUserProfile());
   }
+  
+  /**
+     * Uses external token and provider for an
+     * access_token. After receiving the access_token, this method
+     * uses it to query the userinfo endpoint in order to get information
+     * about the user in question.
+     *
+     * When using this, make sure that the property oidc is set to false.
+     * Otherwise stricter validations take place that make this operation
+     * fail.
+     *
+     * @param provider
+     * @param external_token
+     * @param headers Optional additional http-headers.
+     */
+  public fetchTokenUsingExternalTokenAndLoadUserProfile(
+    provider: string,
+    external_token: string,
+    headers: HttpHeaders = new HttpHeaders()
+  ): Promise<object> {
+  	return this.fetchTokenUsingUsingExternalToken(provider, external_token, headers).then(
+  		() => this.loadUserProfile()
+  	);
+  }
 
   /**
    * Loads the user profile by accessing the user info endpoint defined by OpenId Connect.
@@ -742,6 +766,86 @@ export class OAuthService extends AuthConfig implements OnDestroy {
         );
     });
   }
+
+	/**
+	 * Uses provider and external token for an access_token.
+	 * @param provider
+	 * @param external_token
+	 * @param headers Optional additional http-headers.
+	 */
+	public fetchTokenUsingUsingExternalToken(
+	  provider: string,
+	  external_token: string,
+	  headers: HttpHeaders = new HttpHeaders()
+	): Promise<object> {
+	  if (!this.validateUrlForHttps(this.tokenEndpoint)) {
+		throw new Error(
+		  'tokenEndpoint must use https, or config value for property requireHttps must allow http'
+		);
+	  }
+
+	  return new Promise((resolve, reject) => {
+		/**
+		 * A `HttpParameterCodec` that uses `encodeURIComponent` and `decodeURIComponent` to
+		 * serialize and parse URL parameter keys and values.
+		 *
+		 * @stable
+		 */
+		let params = new HttpParams({ encoder: new WebHttpUrlEncodingCodec() })
+		  .set('grant_type', 'external')
+		  .set('scope', this.scope)
+		  .set('provider', provider)
+		  .set('external_token', external_token);
+
+		if (this.useHttpBasicAuth) {
+		  const header = btoa(`${this.clientId}:${this.dummyClientSecret}`);
+		  headers = headers.set(
+			'Authorization',
+			'Basic ' + header);
+		}
+
+		if (!this.useHttpBasicAuth) {
+		  params = params.set('client_id', this.clientId);
+		}
+
+		if (!this.useHttpBasicAuth && this.dummyClientSecret) {
+		  params = params.set('client_secret', this.dummyClientSecret);
+		}
+
+		if (this.customQueryParams) {
+		  for (const key of Object.getOwnPropertyNames(this.customQueryParams)) {
+			params = params.set(key, this.customQueryParams[key]);
+		  }
+		}
+
+		headers = headers.set(
+		  'Content-Type',
+		  'application/x-www-form-urlencoded'
+		);
+
+		this.http
+		  .post<TokenResponse>(this.tokenEndpoint, params, { headers })
+		  .subscribe(
+			tokenResponse => {
+			  this.debug('tokenResponse', tokenResponse);
+			  this.storeAccessTokenResponse(
+				tokenResponse.access_token,
+				tokenResponse.refresh_token,
+				tokenResponse.expires_in,
+				tokenResponse.scope
+			  );
+
+			  this.eventsSubject.next(new OAuthSuccessEvent('token_received'));
+			  resolve(tokenResponse);
+			},
+			err => {
+			  this.logger.error('Error performing external token flow', err);
+			  this.eventsSubject.next(new OAuthErrorEvent('token_error', err));
+			  reject(err);
+			}
+		  );
+	  });
+	}
 
   /**
    * Uses password flow to exchange userName and password for an access_token.
